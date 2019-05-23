@@ -125,10 +125,9 @@ void calculate_param(struct param_rl *par, int cpu){
 		total += proc[cpuN];	
 	}
 
-	total += 1;
-
 	// Going to add a new process to this
 	proc[cpu]++;
+	total += 1;
 
 	// bias is 0.1
 	par->bias = precision / 10;
@@ -137,9 +136,9 @@ void calculate_param(struct param_rl *par, int cpu){
 
 	var = 0;
 	
-	for(cpu=0;cpu<NR_CPU;cpu++){
-		rq = cpu_rq(cpu);
-		var += (proc[cpu] - mean) * (proc[cpu] - mean);	
+	for(cpuN=0;cpuN<NR_CPU;cpuN++){
+		rq = cpu_rq(cpuN);
+		var += (proc[cpuN] - mean) * (proc[cpuN] - mean);	
 	}
 
 	// var/10
