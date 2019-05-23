@@ -28,7 +28,6 @@ void printfp(char *s, long a);
 long mul(long x, long y);
 long div(long x, long y);
 
-
 # define precision 1000 // 0.001
 
 // All in frac * precision; eg 0.02 --> 20
@@ -111,12 +110,62 @@ long calculate_Qval(struct param_rl p){
 	return qval;
 }
 
+void print_all_rq(struct cfs_rq *cfs_rq){
+
+	struct sched_entity *se;
+	struct rb_node *next;
+	struct task_struct *p;
+
+	se = cfs_rq->curr;
+	
+	if(se != NULL){
+		if (entity_is_task(se)) {
+			p = container_of(se, struct task_struct, se);
+			trace_printk("PID: %d\n",p->pid);
+		}
+		else
+			print_all_rq(se->my_q);
+	}
+
+	se = __pick_first_entity(cfs_rq);
+
+	while(se !=NULL){
+
+		if (entity_is_task(se)) {
+			p = container_of(se, struct task_struct, se);
+			trace_printk("PID: %d\n",p->pid);
+		}
+		else
+			print_all_rq(se->my_q);
+
+		next = rb_next(&se->run_node);
+		
+		if (!next)
+			se = NULL;
+		else
+			se = rb_entry(next, struct sched_entity, run_node);
+	}
+}
+
 void calculate_param(struct param_rl *par, int cpu){
 		
 	struct rq *rq;
 	long proc[NR_CPU];
 	int cpuN,mean,total,var;
 
+
+	// TODEL
+	struct cfs_rq *cfs_rq;
+	
+	rq = cpu_rq(cpu);
+	cfs_rq = &rq->cfs;
+	
+	trace_printk("nr_running: %d\n",rq->nr_running);	
+
+	print_all_rq(cfs_rq);
+	// TODEL
+
+	
 	total = 0;
 
 	for(cpuN=0; cpuN<NR_CPU; cpuN++){
@@ -144,7 +193,7 @@ void calculate_param(struct param_rl *par, int cpu){
 	// var/10
 	par->nr_running = var*10;
 	
-	printfp("variance", par->nr_running);
+	//printfp("variance", par->nr_running);	
 }
 
 long calculate_reward(){
