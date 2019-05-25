@@ -16,7 +16,7 @@ long prev_Qval;
 unsigned long flags;
 
 //Function prototype declaration
-void calculate_param(struct param_rl *p, int cpu);
+void calculate_param(struct param_rl *par, int cpu, struct task_struct *p);
 void update_weights(long curr_Qval);
 long calculate_Qval(struct param_rl p);
 
@@ -29,6 +29,7 @@ long mul(long x, long y);
 long div(long x, long y);
 
 # define precision 1000 // 0.001
+# define prscale 100 // precision/10
 
 // All in frac * precision; eg 0.02 --> 20
 #define	alpha 200
@@ -46,7 +47,7 @@ int select_task_rq_rl(struct task_struct *p, int cpu_given, int sd_flags, int wa
 	
 	for(cpu=0;cpu<NR_CPU;cpu++){
 		// Get the current state f(s',a')		
-		calculate_param(&parameters[cpu],cpu);
+		calculate_param(&parameters[cpu],cpu,p);
 		// Get Q(s',a') with current weights
 		Qval[cpu] = calculate_Qval(parameters[cpu]);	
 	}
@@ -94,37 +95,42 @@ void update_weights(long curr_Qval){
 	
 	weights[0] = weights[0] + mul(mul(alpha, delta), prev_param.bias);	
 	weights[1] = weights[1] + mul(mul(alpha, delta), prev_param.nr_running);
+	weights[2] = weights[2] + mul(mul(alpha, delta), prev_param.is_hit);
 
 	printfp("weights[0]", weights[0]);
 	printfp("weights[1]", weights[1]);
+	printfp("weights[2]", weights[2]);
 }
 
 long calculate_Qval(struct param_rl p){
 	
-	long res1,res2,qval;
+	long res1,res2,res3,qval;
 
 	res1 = mul((p.bias), weights[0]);
 	res2 = mul((p.nr_running), weights[1]);
+	res3 = mul((p.is_hit), weights[2]);
 
-	qval = res1+res2;
+	qval = res1+res2+res3;
 	return qval;
 }
 
-void print_all_rq(struct cfs_rq *cfs_rq){
+int calc_hit_nr(struct cfs_rq *cfs_rq, int cpu){
 
 	struct sched_entity *se;
 	struct rb_node *next;
 	struct task_struct *p;
+	int hits;
 
 	se = cfs_rq->curr;
-	
+	hits = 0;
+
 	if(se != NULL){
 		if (entity_is_task(se)) {
 			p = container_of(se, struct task_struct, se);
-			trace_printk("PID: %d\n",p->pid);
+			hits += ((p->pid) % NR_CPU == cpu);
 		}
 		else
-			print_all_rq(se->my_q);
+			hits += calc_hit_nr(se->my_q, cpu);
 	}
 
 	se = __pick_first_entity(cfs_rq);
@@ -133,10 +139,10 @@ void print_all_rq(struct cfs_rq *cfs_rq){
 
 		if (entity_is_task(se)) {
 			p = container_of(se, struct task_struct, se);
-			trace_printk("PID: %d\n",p->pid);
+			hits += ((p->pid) % NR_CPU == cpu);
 		}
 		else
-			print_all_rq(se->my_q);
+			hits += calc_hit_nr(se->my_q, cpu);
 
 		next = rb_next(&se->run_node);
 		
@@ -145,26 +151,15 @@ void print_all_rq(struct cfs_rq *cfs_rq){
 		else
 			se = rb_entry(next, struct sched_entity, run_node);
 	}
+
+	return hits;
 }
 
-void calculate_param(struct param_rl *par, int cpu){
+void calculate_param(struct param_rl *par, int cpu, struct task_struct *p){
 		
 	struct rq *rq;
 	long proc[NR_CPU];
 	int cpuN,mean,total,var;
-
-
-	// TODEL
-	struct cfs_rq *cfs_rq;
-	
-	rq = cpu_rq(cpu);
-	cfs_rq = &rq->cfs;
-	
-	trace_printk("nr_running: %d\n",rq->nr_running);	
-
-	print_all_rq(cfs_rq);
-	// TODEL
-
 	
 	total = 0;
 
@@ -174,31 +169,36 @@ void calculate_param(struct param_rl *par, int cpu){
 		total += proc[cpuN];	
 	}
 
+	printfp("nr_running", proc[cpu]*precision);
+
 	// Going to add a new process to this
 	proc[cpu]++;
 	total += 1;
 
-	// bias is 0.1
-	par->bias = precision / 10;
-	
 	mean = total/NR_CPU;
 
-	var = 0;
-	
+	var = 0;	
 	for(cpuN=0;cpuN<NR_CPU;cpuN++){
 		rq = cpu_rq(cpuN);
 		var += (proc[cpuN] - mean) * (proc[cpuN] - mean);	
 	}
 
 	// var/10
-	par->nr_running = var*10;
+	par->nr_running = (var*prscale)/total;
+
+	par->is_hit = ((p->pid) % NR_CPU == cpu) * prscale;
+
+	// bias is 0.1
+	par->bias = prscale;
+
+	printfp("is_hit", par->is_hit);
 	
-	//printfp("variance", par->nr_running);	
 }
 
 long calculate_reward(){
-	int cpu,min,max,num;
+	int cpu,min,max,num,hits;
 	struct rq *rq;
+	struct cfs_rq *cfs_rq;
 
 	rq = cpu_rq(0);
 	min = rq->nr_running;
@@ -208,18 +208,28 @@ long calculate_reward(){
 		rq = cpu_rq(cpu);
 		num = rq->nr_running;
 		if(num > max) max = num;
-		if(num < min) min = num; 	
+		if(num < min) min = num;
+	}
+
+	hits = 0;
+
+	for(cpu=0;cpu<NR_CPU;cpu++){
+		rq = cpu_rq(cpu);
+		cfs_rq = &rq->cfs;
+		hits +=  calc_hit_nr(cfs_rq, cpu);	
 	}
 
 	num = min - max;
+	hits = hits * precision/ NR_CPU;
 
-	return 10 * ( 3 - (num*num) );
+	return precision*( 3 - (num*num) ) + hits;
 }
 
 
 void store_param(struct param_rl p){
 	prev_param.bias = p.bias;
 	prev_param.nr_running = p.nr_running;
+	prev_param.is_hit = p.is_hit;
 }
 
 int max_index(long Qval[]){
