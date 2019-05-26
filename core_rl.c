@@ -159,44 +159,38 @@ void calculate_param(struct param_rl *par, int cpu, struct task_struct *p){
 		
 	struct rq *rq;
 	long proc[NR_CPU];
-	int cpuN,mean,total,var;
+	int cpuN,min,max,num;
 	
-	total = 0;
-
 	for(cpuN=0; cpuN<NR_CPU; cpuN++){
 		rq = cpu_rq(cpuN);
 		proc[cpuN] = rq->nr_running;
-		total += proc[cpuN];	
 	}
 
 	printfp("nr_running", proc[cpu]*precision);
 
 	// Going to add a new process to this
 	proc[cpu]++;
-	total += 1;
 
-	mean = total/NR_CPU;
-
-	var = 0;	
-	for(cpuN=0;cpuN<NR_CPU;cpuN++){
-		rq = cpu_rq(cpuN);
-		var += (proc[cpuN] - mean) * (proc[cpuN] - mean);	
+	min = proc[0];
+	max = min;
+	
+	for(cpuN=1; cpuN<NR_CPU; cpuN++){
+		num = proc[cpuN];
+		if(num > max) max = num;
+		if(num < min) min = num;	
 	}
-
-	// var/10
-	par->nr_running = (var*prscale)/total;
-
+	
+	par->bias = prscale;
+	par->nr_running = ((max - min) >= 3) * prscale;
 	par->is_hit = ((p->pid) % NR_CPU == cpu) * prscale;
 
-	// bias is 0.1
-	par->bias = prscale;
-
+	printfp("is_ghost", par->nr_running);
 	printfp("is_hit", par->is_hit);
 	
 }
 
 long calculate_reward(){
-	int cpu,min,max,num,hits;
+	int cpu,min,max,num,hits,total;
 	struct rq *rq;
 	struct cfs_rq *cfs_rq;
 
@@ -212,17 +206,28 @@ long calculate_reward(){
 	}
 
 	hits = 0;
+	total = 0;
 
 	for(cpu=0;cpu<NR_CPU;cpu++){
 		rq = cpu_rq(cpu);
 		cfs_rq = &rq->cfs;
-		hits +=  calc_hit_nr(cfs_rq, cpu);	
+		hits +=  calc_hit_nr(cfs_rq, cpu);
+		total += rq->nr_running;	
 	}
 
-	num = min - max;
-	hits = hits * precision/ NR_CPU;
+	if(total != 0)
+		hits = (hits * precision)/ total;
+	else
+		hits = precision;
 
-	return precision*( 3 - (num*num) ) + hits;
+	num = max - min;
+
+	if(num > 3){
+		hits = -10*precision;
+	}
+
+	return hits;
+	//return precision*( 3 - (num*num) ) + hits;
 }
 
 
