@@ -180,8 +180,14 @@ void calculate_param(struct param_rl *par, int cpu, struct task_struct *p){
 		if(num < min) min = num;	
 	}
 	
+	num = (max - min);
+
+	if(num != 0)
+		par->nr_running = ((num - 1) * (num - 1)) * prscale;
+	else
+		par->nr_running = -1 * prscale;
+
 	par->bias = prscale;
-	par->nr_running = ((max - min) >= 3) * prscale;
 	par->is_hit = ((p->pid) % NR_CPU == cpu) * prscale;
 
 	printfp("is_ghost", par->nr_running);
@@ -190,9 +196,9 @@ void calculate_param(struct param_rl *par, int cpu, struct task_struct *p){
 }
 
 long calculate_reward(){
-	int cpu,min,max,num,hits,total;
+	int cpu,min,max,num,R;
+
 	struct rq *rq;
-	struct cfs_rq *cfs_rq;
 
 	rq = cpu_rq(0);
 	min = rq->nr_running;
@@ -204,30 +210,24 @@ long calculate_reward(){
 		if(num > max) max = num;
 		if(num < min) min = num;
 	}
+	
+	/*
+		CPU hit reward for revious action 
+		1 -> if hit correctly 
+		0 -> wrong hit
+	*/
+	R = prev_param.is_hit * 10;
 
-	hits = 0;
-	total = 0;
-
-	for(cpu=0;cpu<NR_CPU;cpu++){
-		rq = cpu_rq(cpu);
-		cfs_rq = &rq->cfs;
-		hits +=  calc_hit_nr(cfs_rq, cpu);
-		total += rq->nr_running;	
-	}
-
-	if(total != 0)
-		hits = (hits * precision)/ total;
-	else
-		hits = precision;
+	/*
+		A ghost reward of -10 if cpus highly imbalanced
+	*/
 
 	num = max - min;
-
 	if(num > 3){
-		hits = -10*precision;
+		R = -10*precision;
 	}
 
-	return hits;
-	//return precision*( 3 - (num*num) ) + hits;
+	return R;
 }
 
 
