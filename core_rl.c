@@ -84,7 +84,7 @@ int select_task_rq_rl(struct task_struct *p, int cpu_given, int sd_flags, int wa
  
 
 void update_weights(long curr_Qval){
-	long R, delta;
+	long R, delta, alphaDelta;
 
 	R = calculate_reward();	
 	
@@ -93,9 +93,15 @@ void update_weights(long curr_Qval){
 	printfp("Reward", R);	
 	printfp("Delta", delta);
 	
-	weights[0] = weights[0] + mul(mul(alpha, delta), prev_param.bias);	
-	weights[1] = weights[1] + mul(mul(alpha, delta), prev_param.nr_running);
-	weights[2] = weights[2] + mul(mul(alpha, delta), prev_param.is_hit);
+	alphaDelta = mul(alpha, delta);
+
+	printfp("weights[0]", weights[0]);
+	printfp("weights[1]", weights[1]);
+	printfp("weights[2]", weights[2]);
+
+	weights[0] += mul(alphaDelta, prev_param.bias);	
+	weights[1] += mul(alphaDelta, prev_param.nr_running);
+	weights[2] += mul(alphaDelta, prev_param.is_hit);
 
 	printfp("weights[0]", weights[0]);
 	printfp("weights[1]", weights[1]);
