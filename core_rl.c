@@ -10,14 +10,15 @@ spinlock_t mLock = __SPIN_LOCK_UNLOCKED(mLock);
 int weights[NR_FEAT];
 
 struct param_rl prev_param;
-long prev_Qval;
+long prev_Vval;
 
 // dummy variable for lock acquire and release
 unsigned long flags;
 
 //Function prototype declaration
-void calculate_param(struct param_rl *par, int cpu, struct task_struct *p);
-void update_weights(long curr_Qval);
+void calculate_Qparam(struct param_rl *par, int cpu, struct task_struct *p);
+void calculate_param(struct param_rl *par);
+void update_weights(void);
 long calculate_Qval(struct param_rl p);
 
 int max_index(long Qval[]);
@@ -36,76 +37,51 @@ long div(long x, long y);
 #define	gamma 980
 #define epsilon 10
 
+int cpu_lock = -1;
+int timer_tick = 0;
+
+#define time_quanta 100
+
 int select_task_rq_rl(struct task_struct *p, int cpu_given, int sd_flags, int wake_flags){
 	struct param_rl parameters[NR_CPU];
-	long Qval[NR_CPU]; long maxQval;
+	long Qval[NR_CPU];
 	int cpu, cpu_chosen;
 
-	spin_lock_irqsave(&mLock,flags);
-	
+	int is_acquire = 0;
+
 	trace_printk("\n");
+
+	// Find a better way to do this
+	spin_lock_irqsave(&mLock,flags);
+	if(cpu_lock == -1){
+		trace_printk("Lock Acquired\n");
+		cpu_lock = -2;
+		is_acquire = 1;
+	}
+	spin_unlock_irqrestore(&mLock,flags);
 	
 	for(cpu=0;cpu<NR_CPU;cpu++){
-		// Get the current state f(s',a')		
-		calculate_param(&parameters[cpu],cpu,p);
-		// Get Q(s',a') with current weights
-		Qval[cpu] = calculate_Qval(parameters[cpu]);	
-	}
-
-	// Finding max Q(s',a')	
-	cpu = max_index(Qval);
-	maxQval = Qval[cpu];
-
-	// Update weights
-	update_weights(maxQval);
-
-	// Current state is s from now onwards
-
-	// Calculate Q(s,a) [ with updated weights ]
-	for(cpu=0;cpu<NR_CPU;cpu++){
+		// Get the current state f(s,a)		
+		calculate_Qparam(&parameters[cpu],cpu,p);
+		// Get Q(s,a) 
 		Qval[cpu] = calculate_Qval(parameters[cpu]);	
 	}
 
 	// Max over all Q(s,a)
 	cpu_chosen = max_index(Qval);
 	
-	// Store Q(s,a) to be used in next weight update 
-	prev_Qval = Qval[cpu_chosen];
+	if(is_acquire == 1){
+		// Store max{a : Q(s,a)}. [ To be used in next weight update ] 
+		prev_Vval = Qval[cpu_chosen];
+		
+		// Store f(s,a)
+		store_param(parameters[cpu_chosen]);
+	}
 	
-	// Store f(s,a)
-	store_param(parameters[cpu_chosen]);
- 
+	cpu_lock = cpu_chosen;
 
-	spin_unlock_irqrestore(&mLock,flags);
-	
 	trace_printk("CPU chosen: %d\n",cpu_chosen);	
 	return cpu_chosen;
-}
- 
-
-void update_weights(long curr_Qval){
-	long R, delta, alphaDelta;
-
-	R = calculate_reward();	
-	
-	delta = (R + mul(gamma, curr_Qval)) - prev_Qval;
-
-	printfp("Reward", R);	
-	printfp("Delta", delta);
-	
-	alphaDelta = mul(alpha, delta);
-
-	printfp("weights[0]", weights[0]);
-	printfp("weights[1]", weights[1]);
-	printfp("weights[2]", weights[2]);
-
-	weights[0] += mul(alphaDelta, prev_param.bias);	
-	weights[1] += mul(alphaDelta, prev_param.nr_running);
-	weights[2] += mul(alphaDelta, prev_param.is_hit);
-
-	printfp("weights[0]", weights[0]);
-	printfp("weights[1]", weights[1]);
-	printfp("weights[2]", weights[2]);
 }
 
 long calculate_Qval(struct param_rl p){
@@ -120,68 +96,24 @@ long calculate_Qval(struct param_rl p){
 	return qval;
 }
 
-int calc_hit_nr(struct cfs_rq *cfs_rq, int cpu){
-
-	struct sched_entity *se;
-	struct rb_node *next;
-	struct task_struct *p;
-	int hits;
-
-	se = cfs_rq->curr;
-	hits = 0;
-
-	if(se != NULL){
-		if (entity_is_task(se)) {
-			p = container_of(se, struct task_struct, se);
-			hits += ((p->pid) % NR_CPU == cpu);
-		}
-		else
-			hits += calc_hit_nr(se->my_q, cpu);
+void get_nr_process(long proc[]){
+	int cpu;
+	struct rq *rq;
+	
+	for(cpu=0; cpu<NR_CPU; cpu++){
+		rq = cpu_rq(cpu);
+		proc[cpu] = rq->nr_running;
 	}
-
-	se = __pick_first_entity(cfs_rq);
-
-	while(se !=NULL){
-
-		if (entity_is_task(se)) {
-			p = container_of(se, struct task_struct, se);
-			hits += ((p->pid) % NR_CPU == cpu);
-		}
-		else
-			hits += calc_hit_nr(se->my_q, cpu);
-
-		next = rb_next(&se->run_node);
-		
-		if (!next)
-			se = NULL;
-		else
-			se = rb_entry(next, struct sched_entity, run_node);
-	}
-
-	return hits;
 }
 
-void calculate_param(struct param_rl *par, int cpu, struct task_struct *p){
+int get_proc_variance(long proc[]){
+	int cpu,min,max,num,var;
 		
-	struct rq *rq;
-	long proc[NR_CPU];
-	int cpuN,min,max,num;
-	
-	for(cpuN=0; cpuN<NR_CPU; cpuN++){
-		rq = cpu_rq(cpuN);
-		proc[cpuN] = rq->nr_running;
-	}
-
-	printfp("nr_running", proc[cpu]*precision);
-
-	// Going to add a new process to this
-	proc[cpu]++;
-
 	min = proc[0];
 	max = min;
 	
-	for(cpuN=1; cpuN<NR_CPU; cpuN++){
-		num = proc[cpuN];
+	for(cpu=1; cpu<NR_CPU; cpu++){
+		num = proc[cpu];
 		if(num > max) max = num;
 		if(num < min) min = num;	
 	}
@@ -189,16 +121,45 @@ void calculate_param(struct param_rl *par, int cpu, struct task_struct *p){
 	num = (max - min);
 
 	if(num != 0)
-		par->nr_running = ((num - 1) * (num - 1)) * prscale;
+		var = ((num - 1) * (num - 1)) * prscale;
 	else
-		par->nr_running = -1 * prscale;
+		var = -1 * prscale;
 
+	return var;
+}
+
+void calculate_Qparam(struct param_rl *par, int cpu, struct task_struct *p){
+		
+	long proc[NR_CPU];
+	
 	par->bias = prscale;
 	par->is_hit = ((p->pid) % NR_CPU == cpu) * prscale;
 
-	printfp("is_ghost", par->nr_running);
 	printfp("is_hit", par->is_hit);
+
+	get_nr_process(proc);
 	
+	printfp("nr_running", proc[cpu]*precision);
+	// Going to add a new process to this
+	proc[cpu]++;
+
+	par->nr_running = get_proc_variance(proc);
+	printfp("is_ghost", par->nr_running);	
+}
+
+void calculate_param(struct param_rl *par){
+	
+	long proc[NR_CPU];
+	
+	par->bias = prscale;
+	par->is_hit = prev_param.is_hit;
+
+	printfp("is_hit", par->is_hit);
+
+	get_nr_process(proc);
+	par->nr_running = get_proc_variance(proc);
+
+	printfp("is_ghost", par->nr_running);
 }
 
 long calculate_reward(){
@@ -218,7 +179,7 @@ long calculate_reward(){
 	}
 	
 	/*
-		CPU hit reward for revious action 
+		CPU hit reward for previous action 
 		1 -> if hit correctly 
 		0 -> wrong hit
 	*/
@@ -256,6 +217,48 @@ int max_index(long Qval[]){
 	}
 
 	return index;
+}
+
+// Weight update functions
+
+void update_weights(){
+	long R, delta, alphaDelta, Vval;
+	struct param_rl parameter;
+
+	R = calculate_reward();	
+	
+	calculate_param(&parameter);
+
+	Vval = calculate_Qval(parameter);
+	
+	delta = (R + mul(gamma, Vval)) - prev_Vval;
+
+	printfp("Reward", R);	
+	printfp("Delta", delta);
+	
+	alphaDelta = mul(alpha, delta);
+
+	weights[0] += mul(alphaDelta, prev_param.bias);	
+	weights[1] += mul(alphaDelta, prev_param.nr_running);
+	weights[2] += mul(alphaDelta, prev_param.is_hit);
+
+	printfp("weights[0]", weights[0]);
+	printfp("weights[1]", weights[1]);
+	printfp("weights[2]", weights[2]);
+
+}
+
+void scheduler_tick_rl(int cpu){
+	if(cpu != cpu_lock)
+		return;
+
+	timer_tick++;
+
+	if(timer_tick == time_quanta){
+		update_weights();
+		cpu_lock = -1;
+		timer_tick = 0;
+	}
 }
 
 // Fixed point simulation functions

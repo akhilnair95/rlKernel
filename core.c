@@ -3043,6 +3043,7 @@ void scheduler_tick(void)
 	struct rq_flags rf;
 
 	sched_clock_tick();
+	scheduler_tick_rl(cpu);
 
 	rq_lock(rq, &rf);
 
