@@ -40,7 +40,7 @@ long div(long x, long y);
 int cpu_lock = -1;
 int timer_tick = 0;
 
-#define time_quanta 100
+#define time_quanta 2
 
 int select_task_rq_rl(struct task_struct *p, int cpu_given, int sd_flags, int wake_flags){
 	struct param_rl parameters[NR_CPU];
@@ -48,8 +48,6 @@ int select_task_rq_rl(struct task_struct *p, int cpu_given, int sd_flags, int wa
 	int cpu, cpu_chosen;
 
 	int is_acquire = 0;
-
-	trace_printk("\n");
 
 	// Find a better way to do this
 	spin_lock_irqsave(&mLock,flags);
@@ -64,7 +62,7 @@ int select_task_rq_rl(struct task_struct *p, int cpu_given, int sd_flags, int wa
 		// Get the current state f(s,a)		
 		calculate_Qparam(&parameters[cpu],cpu,p);
 		// Get Q(s,a) 
-		Qval[cpu] = calculate_Qval(parameters[cpu]);	
+		Qval[cpu] = calculate_Qval(parameters[cpu]);		
 	}
 
 	// Max over all Q(s,a)
@@ -76,11 +74,12 @@ int select_task_rq_rl(struct task_struct *p, int cpu_given, int sd_flags, int wa
 		
 		// Store f(s,a)
 		store_param(parameters[cpu_chosen]);
-	}
-	
-	cpu_lock = cpu_chosen;
+		
+		cpu_lock = cpu_chosen;
 
-	trace_printk("CPU chosen: %d\n",cpu_chosen);	
+		trace_printk("CPU chosen: %d\n",cpu_chosen);	
+	}
+		
 	return cpu_chosen;
 }
 
@@ -121,9 +120,9 @@ int get_proc_variance(long proc[]){
 	num = (max - min);
 
 	if(num != 0)
-		var = ((num - 1) * (num - 1)) * prscale;
+		var = ((num - 1) * (num - 1)) * 10;
 	else
-		var = -1 * prscale;
+		var = -10;
 
 	return var;
 }
@@ -135,30 +134,40 @@ void calculate_Qparam(struct param_rl *par, int cpu, struct task_struct *p){
 	par->bias = prscale;
 	par->is_hit = ((p->pid) % NR_CPU == cpu) * prscale;
 
-	printfp("is_hit", par->is_hit);
-
 	get_nr_process(proc);
 	
-	printfp("nr_running", proc[cpu]*precision);
 	// Going to add a new process to this
 	proc[cpu]++;
 
 	par->nr_running = get_proc_variance(proc);
-	printfp("is_ghost", par->nr_running);	
+
+	proc[cpu]--;
+
+	if(cpu_lock == -2){
+		trace_printk("Nr_running %ld\n", proc[cpu]);		
+		printfp("is_hit", par->is_hit);
+		printfp("is_ghost", par->nr_running);				
+		trace_printk("\n");		
+	}	
 }
 
 void calculate_param(struct param_rl *par){
 	
 	long proc[NR_CPU];
-	
+	int cpu;
+
 	par->bias = prscale;
 	par->is_hit = prev_param.is_hit;
 
-	printfp("is_hit", par->is_hit);
-
 	get_nr_process(proc);
+
+	for(cpu=0; cpu<NR_CPU; cpu++){
+		printfp("Nr_pr",proc[cpu]*precision);
+	}
+
 	par->nr_running = get_proc_variance(proc);
 
+	printfp("is_hit", par->is_hit);
 	printfp("is_ghost", par->nr_running);
 }
 
@@ -180,18 +189,18 @@ long calculate_reward(){
 	
 	/*
 		CPU hit reward for previous action 
-		1 -> if hit correctly 
+		0.1 -> if hit correctly 
 		0 -> wrong hit
 	*/
-	R = prev_param.is_hit * 10;
+	R = prev_param.is_hit;
 
 	/*
-		A ghost reward of -10 if cpus highly imbalanced
+		A ghost reward of -1 if cpus highly imbalanced
 	*/
 
 	num = max - min;
 	if(num > 3){
-		R = -10*precision;
+		R = -1*precision;
 	}
 
 	return R;
@@ -233,10 +242,16 @@ void update_weights(){
 	
 	delta = (R + mul(gamma, Vval)) - prev_Vval;
 
-	printfp("Reward", R);	
+	printfp("Reward", R);
+	printfp("Vval", Vval);
+	printfp("prev_Vval", prev_Vval);	
 	printfp("Delta", delta);
 	
 	alphaDelta = mul(alpha, delta);
+
+	printfp("weights[0]", weights[0]);
+	printfp("weights[1]", weights[1]);
+	printfp("weights[2]", weights[2]);
 
 	weights[0] += mul(alphaDelta, prev_param.bias);	
 	weights[1] += mul(alphaDelta, prev_param.nr_running);
