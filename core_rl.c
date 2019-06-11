@@ -2,6 +2,7 @@
 #include <linux/spinlock.h>
 #include <linux/sched.h>
 #include <linux/printk.h>
+#include <linux/random.h>
 
 #include "core_rl.h"
 #include "sched.h"
@@ -34,13 +35,13 @@ long div(long x, long y);
 
 // All in frac * precision; eg 0.02 --> 20
 #define	alpha 200
-#define	gamma 980
+#define	gamma 950
 #define epsilon 10
 
 int cpu_lock = -1;
 int timer_tick = 0;
 
-#define time_quanta 2
+#define time_quanta 1
 
 int select_task_rq_rl(struct task_struct *p, int cpu_given, int sd_flags, int wake_flags){
 	struct param_rl parameters[NR_CPU];
@@ -48,6 +49,8 @@ int select_task_rq_rl(struct task_struct *p, int cpu_given, int sd_flags, int wa
 	int cpu, cpu_chosen;
 
 	int is_acquire = 0;
+
+	unsigned int coin;
 
 	// Find a better way to do this
 	spin_lock_irqsave(&mLock,flags);
@@ -72,6 +75,15 @@ int select_task_rq_rl(struct task_struct *p, int cpu_given, int sd_flags, int wa
 		// Store max{a : Q(s,a)}. [ To be used in next weight update ] 
 		prev_Vval = Qval[cpu_chosen];
 		
+		// With prob of epsilon, make random action
+		coin = get_random_int() % precision;
+		if(coin <= epsilon){
+			trace_printk("Random Action\n");
+			cpu_chosen =  get_random_int() % NR_CPU;
+		}else{
+			trace_printk("Deterministic Action\n");
+		}
+	
 		// Store f(s,a)
 		store_param(parameters[cpu_chosen]);
 		
@@ -106,7 +118,7 @@ void get_nr_process(long proc[]){
 }
 
 int get_proc_variance(long proc[]){
-	int cpu,min,max,num,var;
+	int cpu,min,max,num;
 		
 	min = proc[0];
 	max = min;
@@ -119,12 +131,7 @@ int get_proc_variance(long proc[]){
 	
 	num = (max - min);
 
-	if(num != 0)
-		var = ((num - 1) * (num - 1)) * 10;
-	else
-		var = -10;
-
-	return var;
+	return (num >= 4) * prscale;
 }
 
 void calculate_Qparam(struct param_rl *par, int cpu, struct task_struct *p){
@@ -189,10 +196,10 @@ long calculate_reward(){
 	
 	/*
 		CPU hit reward for previous action 
-		0.1 -> if hit correctly 
+		1 -> if hit correctly 
 		0 -> wrong hit
 	*/
-	R = prev_param.is_hit;
+	R = prev_param.is_hit * 10;
 
 	/*
 		A ghost reward of -1 if cpus highly imbalanced
@@ -200,7 +207,7 @@ long calculate_reward(){
 
 	num = max - min;
 	if(num > 3){
-		R = -1*precision;
+		R = -5*precision;
 	}
 
 	return R;
@@ -248,10 +255,6 @@ void update_weights(){
 	printfp("Delta", delta);
 	
 	alphaDelta = mul(alpha, delta);
-
-	printfp("weights[0]", weights[0]);
-	printfp("weights[1]", weights[1]);
-	printfp("weights[2]", weights[2]);
 
 	weights[0] += mul(alphaDelta, prev_param.bias);	
 	weights[1] += mul(alphaDelta, prev_param.nr_running);
