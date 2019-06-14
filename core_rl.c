@@ -44,27 +44,40 @@ int select_task_rq_rl(struct task_struct *p, int cpu_given, int sd_flags, int wa
 	
 	int cpu_chosen;
 	int next_state[NR_CPU];
+	int is_acquire = 0;
 
 	unsigned int coin;
-
-	update_weights(p);
+	
+	// Find a better way to do this
+	spin_lock_irqsave(&mLock,flags);
+	if(cpu_lock == -1){
+		trace_printk("Lock Acquired\n");
+		cpu_lock = -2;
+		is_acquire = 1;
+		update_weights(p);
+	}
+	spin_unlock_irqrestore(&mLock,flags);
 
 	cpu_chosen = best_action(p,next_state);
 	
-	// With prob of epsilon, make random action
-	coin = get_random_int() % precision;
-	if(coin <= epsilon){
-		trace_printk("Random Action\n");
-		cpu_chosen =  get_random_int() % NR_CPU;
-	}else{
-		trace_printk("Deterministic Action\n");
+	if(is_acquire == 1){
+		// With prob of epsilon, make random action
+		coin = get_random_int() % precision;
+		if(coin <= epsilon){
+			trace_printk("Random Action\n");
+			cpu_chosen =  get_random_int() % NR_CPU;
+		}else{
+			trace_printk("Deterministic Action\n");
+		}
+
+		// Store prevState [ To be used in next weight update ] 
+		prev_state = next_state[cpu_chosen];
+
+		cpu_lock = cpu_chosen;
+				
+		trace_printk("CPU chosen: %d\n",cpu_chosen);			
 	}
 
-	// Store prevState [ To be used in next weight update ] 
-	prev_state = next_state[cpu_chosen];
-			
-	trace_printk("CPU chosen: %d\n",cpu_chosen);	
-		
 	return cpu_chosen;
 }
 
@@ -216,16 +229,15 @@ int max_index(int state[]){
 
 
 void scheduler_tick_rl(int cpu){
-	/*if(cpu != cpu_lock)
+	if(cpu != cpu_lock)
 		return;
 
 	timer_tick++;
 
 	if(timer_tick == time_quanta){
-		update_weights();
 		cpu_lock = -1;
 		timer_tick = 0;
-	}*/
+	}
 }
 
 // Fixed point simulation functions
