@@ -16,9 +16,9 @@ int prev_state;
 unsigned long flags;
 
 //Function prototype declaration
-int calculate_Qstate(int cpu, struct task_struct *p);
-void update_weights(struct task_struct *p);
-int best_action(struct task_struct *p, int next_state[]);
+int calculate_Qstate(int cpu, int pid);
+int calculate_state(void);
+void update_weights(void);
 
 int max_index(int Qval[]);
 long calculate_reward(void);
@@ -27,13 +27,15 @@ void printfp(char *s, long a);
 long mul(long x, long y);
 long div(long x, long y);
 
+int best_action(int pid, int next_state[]);
+
 # define precision 1000 // 0.001
 # define prscale 100 // precision/10
 
-// All in frac * precision; eg 0.02 --> 20
+// All in frac * precision; eg 0.2 --> 200
 #define	alpha 200
 #define	gamma 950
-#define epsilon 10
+#define epsilon 50
 
 int cpu_lock = -1;
 int timer_tick = 0;
@@ -42,25 +44,26 @@ int timer_tick = 0;
 
 int select_task_rq_rl(struct task_struct *p, int cpu_given, int sd_flags, int wake_flags){
 	
-	int cpu_chosen;
 	int next_state[NR_CPU];
-	int is_acquire = 0;
+	int cpu_chosen;
 
-	unsigned int coin;
+	int is_acquire = 0;
 	
+	unsigned int coin;
+
 	// Find a better way to do this
 	spin_lock_irqsave(&mLock,flags);
 	if(cpu_lock == -1){
 		trace_printk("Lock Acquired\n");
 		cpu_lock = -2;
 		is_acquire = 1;
-		update_weights(p);
 	}
 	spin_unlock_irqrestore(&mLock,flags);
-
-	cpu_chosen = best_action(p,next_state);
+	
+	cpu_chosen = best_action(p->pid,next_state);
 	
 	if(is_acquire == 1){
+
 		// With prob of epsilon, make random action
 		coin = get_random_int() % precision;
 		if(coin <= epsilon){
@@ -72,48 +75,22 @@ int select_task_rq_rl(struct task_struct *p, int cpu_given, int sd_flags, int wa
 
 		// Store prevState [ To be used in next weight update ] 
 		prev_state = next_state[cpu_chosen];
-
-		cpu_lock = cpu_chosen;
 				
-		trace_printk("CPU chosen: %d\n",cpu_chosen);			
-	}
+		cpu_lock = cpu_chosen;
 
+		trace_printk("CPU chosen: %d\n",cpu_chosen);	
+	}
+		
 	return cpu_chosen;
 }
 
-// Weight update functions
-
-void update_weights(struct task_struct *p){
-	long R, delta, Vval;
-	int action, next_state[NR_CPU], state;
-
-	R = calculate_reward();	
-
-	// Max Q(s',a')
-	action = best_action(p, next_state);
-	Vval = QVals[next_state[action]];
-	
-	delta = (R + mul(gamma, Vval)) - QVals[prev_state];
-
-	printfp("Reward", R);
-	printfp("Vval", Vval);
-	printfp("prev_Vval", QVals[prev_state]);	
-	printfp("Delta", delta);
-
-	QVals[prev_state] += mul(alpha, delta);
-
-	for(state = 0; state < NR_STATE;state++){
-		printfp("Qval", QVals[state]);
-	}	
-}
-
-int best_action(struct task_struct *p, int next_state[]){
+int best_action(int pid, int next_state[]){
 	
 	int cpu;
 
 	for(cpu=0;cpu<NR_CPU;cpu++){
 		// Get the current state f(s,a)		
-		next_state[cpu] = calculate_Qstate(cpu,p);		
+		next_state[cpu] = calculate_Qstate(cpu,pid);		
 	}
 
 	// Max over all Q(s,a)
@@ -147,12 +124,11 @@ int get_proc_variance(long proc[]){
 	return (num >= 4);
 }
 
-int calculate_Qstate(int cpu, struct task_struct *p){
-		
+int calculate_Qstate(int cpu, int pid){
 	long proc[NR_CPU];
 	int is_hit, is_ghost;
 	
-	is_hit = ((p->pid) % NR_CPU == cpu);
+	is_hit = (pid % NR_CPU == cpu);
 
 	get_nr_process(proc);
 	
@@ -170,7 +146,7 @@ int calculate_Qstate(int cpu, struct task_struct *p){
 		trace_printk("\n");		
 	}
 	
-	return 2*is_hit + is_ghost;	
+	return 2*is_hit + is_ghost;
 }
 
 long calculate_reward(){
@@ -227,6 +203,40 @@ int max_index(int state[]){
 	return index;
 }
 
+// Weight update functions
+
+void update_weights(){
+	long R, delta, Vval;
+	int action; int hit;
+	int next_state[NR_CPU];
+	int state;
+
+	R = calculate_reward();	
+
+	Vval = 0;
+
+	// For different possible hits	
+	for(hit = 0; hit < NR_CPU; hit++){
+		action = best_action(hit, next_state);
+		Vval += QVals[next_state[action]];
+	}
+
+	// Take avg Vval
+	Vval = Vval/NR_CPU;
+	
+	delta = (R + mul(gamma, Vval)) - QVals[prev_state];
+
+	printfp("Reward", R);
+	printfp("Vval", Vval);
+	printfp("prev_Vval", QVals[prev_state]);	
+	printfp("Delta", delta);
+
+	QVals[prev_state] += mul(alpha, delta);
+
+	for(state = 0; state < NR_STATE;state++){
+		printfp("Qval", QVals[state]);
+	}	
+}
 
 void scheduler_tick_rl(int cpu){
 	if(cpu != cpu_lock)
@@ -235,6 +245,7 @@ void scheduler_tick_rl(int cpu){
 	timer_tick++;
 
 	if(timer_tick == time_quanta){
+		update_weights();
 		cpu_lock = -1;
 		timer_tick = 0;
 	}
