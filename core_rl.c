@@ -18,7 +18,7 @@ unsigned long flags;
 //Function prototype declaration
 int calculate_Qstate(int cpu, int pid);
 int calculate_state(void);
-void update_weights(void);
+void update_weights(int hit);
 
 int max_index(int Qval[]);
 long calculate_reward(void);
@@ -29,6 +29,7 @@ long div(long x, long y);
 
 int best_action(int pid, int next_state[]);
 
+long R;
 # define precision 1000 // 0.001
 # define prscale 100 // precision/10
 
@@ -57,6 +58,7 @@ int select_task_rq_rl(struct task_struct *p, int cpu_given, int sd_flags, int wa
 		trace_printk("Lock Acquired\n");
 		cpu_lock = -2;
 		is_acquire = 1;
+		update_weights(p->pid);
 	}
 	spin_unlock_irqrestore(&mLock,flags);
 	
@@ -205,24 +207,16 @@ int max_index(int state[]){
 
 // Weight update functions
 
-void update_weights(){
-	long R, delta, Vval;
-	int action; int hit;
+void update_weights(int hit){
+	long delta, Vval;
+	int action;
 	int next_state[NR_CPU];
 	int state;
 
-	R = calculate_reward();	
+	//R = calculate_reward();	
 
-	Vval = 0;
-
-	// For different possible hits	
-	for(hit = 0; hit < NR_CPU; hit++){
-		action = best_action(hit, next_state);
-		Vval += QVals[next_state[action]];
-	}
-
-	// Take avg Vval
-	Vval = Vval/NR_CPU;
+	action = best_action(hit, next_state);
+	Vval = QVals[next_state[action]];
 	
 	delta = (R + mul(gamma, Vval)) - QVals[prev_state];
 
@@ -245,7 +239,7 @@ void scheduler_tick_rl(int cpu){
 	timer_tick++;
 
 	if(timer_tick == time_quanta){
-		update_weights();
+		R = calculate_reward();
 		cpu_lock = -1;
 		timer_tick = 0;
 	}
