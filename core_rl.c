@@ -3,12 +3,14 @@
 #include <linux/sched.h>
 #include <linux/printk.h>
 #include <linux/random.h>
+#include <linux/kernel.h>
 
 #include "core_rl.h"
 #include "sched.h"
 
 spinlock_t mLock = __SPIN_LOCK_UNLOCKED(mLock);
 long QVals[NR_STATE];
+long NR_visit[NR_STATE];
 
 int prev_state;
 
@@ -20,7 +22,7 @@ int calculate_Qstate(int cpu, int pid);
 int calculate_state(void);
 void update_weights(int hit);
 
-int max_index(int Qval[]);
+int max_index(int states[]);
 long calculate_reward(void);
 
 void printfp(char *s, long a);
@@ -28,15 +30,16 @@ long mul(long x, long y);
 long div(long x, long y);
 
 int best_action(int pid, int next_state[]);
+int least_action(int states[]);
 
 long R;
 # define precision 1000 // 0.001
 # define prscale 100 // precision/10
 
 // All in frac * precision; eg 0.2 --> 200
-#define	alpha 200
+#define	alpha 100
 #define	gamma 950
-#define epsilon 50
+#define epsilon 100
 
 int cpu_lock = -1;
 int timer_tick = 0;
@@ -44,18 +47,17 @@ int timer_tick = 0;
 #define time_quanta 1
 
 int select_task_rq_rl(struct task_struct *p, int cpu_given, int sd_flags, int wake_flags){
-	
+
 	int next_state[NR_CPU];
 	int cpu_chosen;
 
 	int is_acquire = 0;
-	
+
 	unsigned int coin;
 
 	// Find a better way to do this
 	spin_lock_irqsave(&mLock,flags);
 	if(cpu_lock == -1){
-		trace_printk("Lock Acquired\n");
 		cpu_lock = -2;
 		is_acquire = 1;
 		update_weights(p->pid);
@@ -69,18 +71,15 @@ int select_task_rq_rl(struct task_struct *p, int cpu_given, int sd_flags, int wa
 		// With prob of epsilon, make random action
 		coin = get_random_int() % precision;
 		if(coin <= epsilon){
-			trace_printk("Random Action\n");
-			cpu_chosen =  get_random_int() % NR_CPU;
-		}else{
-			trace_printk("Deterministic Action\n");
+			cpu_chosen =  least_action(next_state);
 		}
 
 		// Store prevState [ To be used in next weight update ] 
 		prev_state = next_state[cpu_chosen];
-				
+
+		NR_visit[prev_state]++;				
 		cpu_lock = cpu_chosen;
 
-		trace_printk("CPU chosen: %d\n",cpu_chosen);	
 	}
 		
 	return cpu_chosen;
@@ -140,13 +139,6 @@ int calculate_Qstate(int cpu, int pid){
 	is_ghost = get_proc_variance(proc);
 
 	proc[cpu]--;
-
-	if(cpu_lock == -2){
-		trace_printk("Nr_running %ld\n", proc[cpu]);		
-		printfp("is_hit", is_hit);
-		printfp("is_ghost", is_ghost);				
-		trace_printk("\n");		
-	}
 	
 	return 2*is_hit + is_ghost;
 }
@@ -177,7 +169,7 @@ long calculate_reward(){
 	R = is_hit * precision;
 	
 	/*
-		A ghost reward of -1 if cpus highly imbalanced
+		A ghost reward of -5 if cpus highly imbalanced
 	*/
 
 	num = max - min;
@@ -188,14 +180,33 @@ long calculate_reward(){
 	return R;
 }
 
-int max_index(int state[]){
+int least_action(int states[]){
 	int index = 0;
-	long maxVal = QVals[state[0]];
-	long Qv;	
+	long min = NR_visit[states[0]];
+	long visitN;	
 	int cpu;
 
 	for(cpu=1;cpu<NR_CPU;cpu++){
-		Qv = QVals[state[cpu]]; 
+		visitN = NR_visit[states[cpu]];
+		if(visitN < min){
+			min = visitN;
+			index = cpu;
+		}
+	}
+
+	return index;
+
+}
+
+int max_index(int states[]){
+	int index = 0;
+	long maxVal = QVals[states[0]];
+	long Qv;	
+	int cpu;
+
+
+	for(cpu=1;cpu<NR_CPU;cpu++){
+		Qv = QVals[states[cpu]]; 
 		if(Qv > maxVal){
 			maxVal = Qv;
 			index = cpu;
@@ -213,23 +224,14 @@ void update_weights(int hit){
 	int next_state[NR_CPU];
 	int state;
 
-	//R = calculate_reward();	
+	R = calculate_reward();	
 
 	action = best_action(hit, next_state);
 	Vval = QVals[next_state[action]];
 	
 	delta = (R + mul(gamma, Vval)) - QVals[prev_state];
 
-	printfp("Reward", R);
-	printfp("Vval", Vval);
-	printfp("prev_Vval", QVals[prev_state]);	
-	printfp("Delta", delta);
-
 	QVals[prev_state] += mul(alpha, delta);
-
-	for(state = 0; state < NR_STATE;state++){
-		printfp("Qval", QVals[state]);
-	}	
 }
 
 void scheduler_tick_rl(int cpu){
@@ -270,5 +272,4 @@ void printfp(char *s, long a){
 	else
 		trace_printk("%s %ld.%03ld \n",s,dec,fra);
 }
-
 
